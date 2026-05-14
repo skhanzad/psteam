@@ -2,6 +2,20 @@
 
 **PlayStation-style trophy overlay for Steam.** PSteam shows your Steam achievements in a floating panel with gold / silver / bronze tiers (from global rarity), optional platinum when you complete a game, auto-detection of the game you are playing, local caching, optional MongoDB sync, and a stats dashboard.
 
+![PSteam logo — Steam-style trophy art](resources/logo.png)
+
+### Trophies view
+
+Per-game achievements with tier counts (gold / silver / bronze from global rarity) and platinum progress.
+
+![PSteam trophies window](resources/trophies.png)
+
+### Trophy dashboard
+
+Cross-game summary, tier breakdowns, and per-game mini charts.
+
+![PSteam trophy dashboard](resources/dashboard.png)
+
 ---
 
 ## What you need
@@ -203,7 +217,7 @@ psteam/
 │   ├── main/           # Electron main — Steam API, windows, tray, IPC, persistence
 │   ├── preload/        # Secure bridge for the renderer
 │   └── renderer/       # React UI — settings, overlay, dashboard
-├── resources/          # Optional tray/window icons (PNG)
+├── resources/          # Icons (PNG) + README screenshots (logo, trophies, dashboard)
 ├── out/                # Created by `npm run build` (gitignored)
 ├── release/            # Created by `npm run dist` — installers / portable (gitignored)
 ├── electron.vite.config.ts
