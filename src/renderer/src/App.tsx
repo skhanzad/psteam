@@ -264,6 +264,8 @@ function SettingsView(): JSX.Element {
   const [webApiKey, setWebApiKey] = useState('')
   const [appId, setAppId] = useState('')
   const [startWithSteamWatch, setStartWithSteamWatch] = useState(true)
+  const [autoDetectGame, setAutoDetectGame] = useState(true)
+  const [detectedGameName, setDetectedGameName] = useState('')
   const [overlayOpacity, setOverlayOpacity] = useState(1)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -274,6 +276,9 @@ function SettingsView(): JSX.Element {
       setWebApiKey(String(await window.psteam.storeGet('webApiKey')))
       setAppId(String(await window.psteam.storeGet('appId')))
       setStartWithSteamWatch(Boolean(await window.psteam.storeGet('startWithSteamWatch')))
+      const rawAuto = await window.psteam.storeGet('autoDetectGame')
+      setAutoDetectGame(rawAuto !== false)
+      setDetectedGameName(String(await window.psteam.storeGet('detectedGameName') ?? ''))
       const rawOp = await window.psteam.storeGet('overlayOpacity')
       const n = typeof rawOp === 'number' ? rawOp : Number.parseFloat(String(rawOp))
       setOverlayOpacity(Number.isFinite(n) ? Math.min(1, Math.max(0.2, n)) : 1)
@@ -286,6 +291,7 @@ function SettingsView(): JSX.Element {
     await window.psteam.storeSet('webApiKey', webApiKey.trim())
     await window.psteam.storeSet('appId', appId.trim())
     await window.psteam.storeSet('startWithSteamWatch', startWithSteamWatch)
+    await window.psteam.storeSet('autoDetectGame', autoDetectGame)
     await window.psteam.storeSet('overlayOpacity', overlayOpacity)
   }
 
@@ -296,6 +302,8 @@ function SettingsView(): JSX.Element {
       await save()
       const res = await window.psteam.achievementsRefresh()
       if (res && 'error' in res) setErr(res.error)
+      setAppId(String(await window.psteam.storeGet('appId')))
+      setDetectedGameName(String(await window.psteam.storeGet('detectedGameName') ?? ''))
     } finally {
       setBusy(false)
     }
@@ -332,7 +340,23 @@ function SettingsView(): JSX.Element {
         <div className="field">
           <label htmlFor="app">Game App ID</label>
           <input id="app" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="e.g. 1245620" />
+          {detectedGameName ? (
+            <p className="field-hint">Last detected in Steam: {detectedGameName}</p>
+          ) : null}
         </div>
+
+        <label className="row-check">
+          <input
+            type="checkbox"
+            checked={autoDetectGame}
+            onChange={(e) => {
+              const v = e.target.checked
+              setAutoDetectGame(v)
+              void window.psteam.storeSet('autoDetectGame', v)
+            }}
+          />
+          Detect active Steam game automatically (uses profile “now playing”; Game details must be Public)
+        </label>
 
         <div className="field">
           <label htmlFor="opacity">
@@ -374,7 +398,8 @@ function SettingsView(): JSX.Element {
 
         <p className="hint">
           Add PSteam to OS startup (Windows: shell:startup, Linux: autostart) so it can detect when Steam launches. The
-          Web API key is stored only on your machine. Use the numeric App ID from the store URL.
+          Web API key is stored only on your machine. With auto-detect on, the App ID field updates while you play; you
+          can still override it manually when auto-detect is off.
         </p>
       </div>
     </div>

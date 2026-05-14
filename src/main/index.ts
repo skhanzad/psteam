@@ -77,6 +77,10 @@ type StoreSchema = {
   overlayCompact: boolean
   /** Bounds before entering compact (restored on expand). */
   overlayExpandedBounds: { x: number; y: number; width: number; height: number } | null
+  /** When true, `appId` is filled from Steam “currently playing” (GetPlayerSummaries). */
+  autoDetectGame: boolean
+  /** Last non-empty title from presence (for settings hint). */
+  detectedGameName: string
 }
 
 const store = new Store<StoreSchema>({
@@ -90,7 +94,9 @@ const store = new Store<StoreSchema>({
     startWithSteamWatch: true,
     overlayOpacity: 1,
     overlayCompact: false,
-    overlayExpandedBounds: null
+    overlayExpandedBounds: null,
+    autoDetectGame: true,
+    detectedGameName: ''
   }
 })
 
@@ -135,6 +141,7 @@ let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let steamPollTimer: ReturnType<typeof setInterval> | null = null
+let gamePresenceTimer: ReturnType<typeof setInterval> | null = null
 let steamWatchTimer: ReturnType<typeof setInterval> | null = null
 let steamWasRunning = false
 let isQuitting = false
@@ -348,6 +355,43 @@ async function fetchPlayerAchievements(
   return list
 }
 
+/** Steam “currently playing” (requires profile game details public). */
+async function fetchCurrentlyPlayedGame(key: string, steamId: string): Promise<{ appId: string; name: string } | null> {
+  const url = `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=${encodeURIComponent(key)}&steamids=${encodeURIComponent(steamId)}`
+  const res = await fetch(url, STEAM_FETCH_INIT)
+  if (!res.ok) throw new Error(`Player summary HTTP ${res.status}`)
+  const data = (await res.json()) as {
+    response?: { players?: { gameid?: string; gameextrainfo?: string }[] }
+  }
+  const p = data.response?.players?.[0]
+  if (!p) return null
+  const gid = typeof p.gameid === 'string' ? p.gameid.trim() : String(p.gameid ?? '').trim()
+  if (!gid || gid === '0') return null
+  if (!/^\d+$/.test(gid)) return null
+  const name = (p.gameextrainfo && String(p.gameextrainfo).trim()) || `App ${gid}`
+  return { appId: gid, name }
+}
+
+async function syncActiveGameFromPresence(): Promise<boolean> {
+  if (!store.get('autoDetectGame')) return false
+  const key = store.get('webApiKey').trim()
+  const steamId = store.get('steamId').trim()
+  if (!key || !steamId) return false
+  try {
+    const g = await fetchCurrentlyPlayedGame(key, steamId)
+    if (!g) return false
+    store.set('detectedGameName', g.name)
+    const prev = store.get('appId').trim()
+    if (g.appId !== prev) {
+      store.set('appId', g.appId)
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 async function fetchSchemaDisplay(
   key: string,
   appId: string
@@ -465,12 +509,21 @@ function broadcastNewUnlocks(previous: StoredAchievement[], next: StoredAchievem
   }
 }
 
-async function refreshAchievements(): Promise<StoredAchievement[] | { error: string }> {
+async function refreshAchievements(opts?: { skipPresenceSync?: boolean }): Promise<StoredAchievement[] | { error: string }> {
+  if (!opts?.skipPresenceSync) {
+    await syncActiveGameFromPresence()
+  }
   const key = store.get('webApiKey').trim()
   const steamId = store.get('steamId').trim()
   const appId = store.get('appId').trim()
-  if (!key || !steamId || !appId) {
-    return { error: 'Set Steam Web API key, Steam ID, and App ID in settings.' }
+  if (!key || !steamId) {
+    return { error: 'Set Steam Web API key and Steam ID in settings.' }
+  }
+  if (!appId) {
+    return {
+      error:
+        'No Steam game detected. Launch a game with your Steam profile’s Game details set to Public, or turn off “Detect active game” and enter an App ID manually.'
+    }
   }
   try {
     const [globalMap, player, schemaMap] = await Promise.all([
@@ -666,9 +719,16 @@ function createTray(): void {
 
 function startSteamPolling(): void {
   if (steamPollTimer) clearInterval(steamPollTimer)
+  if (gamePresenceTimer) clearInterval(gamePresenceTimer)
   steamPollTimer = setInterval(() => {
     void refreshAchievements()
   }, 60_000)
+  gamePresenceTimer = setInterval(() => {
+    void (async () => {
+      const changed = await syncActiveGameFromPresence()
+      if (changed) await refreshAchievements({ skipPresenceSync: true })
+    })()
+  }, 20_000)
   void refreshAchievements()
 }
 
@@ -676,6 +736,10 @@ function stopSteamPolling(): void {
   if (steamPollTimer) {
     clearInterval(steamPollTimer)
     steamPollTimer = null
+  }
+  if (gamePresenceTimer) {
+    clearInterval(gamePresenceTimer)
+    gamePresenceTimer = null
   }
 }
 
@@ -743,9 +807,11 @@ function startSteamProcessWatch(): void {
 }
 
 function settingsComplete(): boolean {
-  return Boolean(
-    store.get('steamId').trim() && store.get('webApiKey').trim() && store.get('appId').trim()
-  )
+  const sid = store.get('steamId').trim()
+  const key = store.get('webApiKey').trim()
+  const app = store.get('appId').trim()
+  const auto = store.get('autoDetectGame')
+  return Boolean(sid && key && (app || auto))
 }
 
 app.whenReady().then(() => {
@@ -781,6 +847,9 @@ ipcMain.handle('store:set', (_e, key: keyof StoreSchema, value: StoreSchema[keyo
   }
   if (key === 'overlayCompact') {
     applyOverlayCompactLayout()
+  }
+  if (key === 'autoDetectGame') {
+    void refreshAchievements()
   }
 })
 ipcMain.handle('achievements:refresh', () => refreshAchievements())
