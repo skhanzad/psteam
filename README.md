@@ -121,6 +121,28 @@ npm run preview
 
 Uses **electron-vite preview** to run the production build locally.
 
+### Release bundle (`electron-builder`)
+
+Ship a **Windows** portable app and a zip archive (no NSIS installer in the default config—portable is friendlier for quick distribution and avoids some Windows toolchain issues):
+
+```bash
+npm run dist
+```
+
+(`npm run release` runs the same command.)
+
+This runs **`npm run build`** first, then **electron-builder**. Output is under **`release/`**:
+
+| Artifact | Description |
+|----------|-------------|
+| **`PSteam-<version>-win-x64.exe`** | Portable executable — no install step; double-click to run. |
+| **`PSteam-<version>-win-x64.zip`** | Same app as a zip (handy for uploads or antivirus-friendly sharing). |
+| **`win-unpacked/`** | Unpacked app directory (useful for debugging or custom packaging). |
+
+The build is **not code-signed** by default (`CSC_IDENTITY_AUTO_DISCOVERY=false`). For production signing, see the [electron-builder code signing](https://www.electron.build/code-signing) docs and adjust the `build` section in `package.json`.
+
+On **macOS** or **Linux**, run `npm run dist` on that platform to produce the **DMG/ZIP** or **AppImage** targets defined in `package.json`.
+
 ---
 
 ## 6. Daily use (short)
@@ -168,6 +190,8 @@ In **Settings**, click **Trophy dashboard** (or open the main window with URL ha
 | `npm run dev` | Development mode with hot reload |
 | `npm run build` | Production build to `out/` |
 | `npm run preview` | Run the production build locally |
+| `npm run dist` | Build + package installers/portables into `release/` |
+| `npm run release` | Same as `npm run dist` |
 
 ---
 
@@ -180,6 +204,8 @@ psteam/
 │   ├── preload/        # Secure bridge for the renderer
 │   └── renderer/       # React UI — settings, overlay, dashboard
 ├── resources/          # Optional tray/window icons (PNG)
+├── out/                # Created by `npm run build` (gitignored)
+├── release/            # Created by `npm run dist` — installers / portable (gitignored)
 ├── electron.vite.config.ts
 ├── package.json
 └── README.md
