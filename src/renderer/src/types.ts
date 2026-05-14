@@ -28,6 +28,9 @@ export type PsteamApi = {
   achievementsRefresh: () => Promise<StoredAchievement[] | { error: string }>
   overlayClose: () => Promise<void>
   openSettings: () => Promise<void>
+  /** Shrink overlay to a thin on-screen strip (not taskbar minimize). */
+  overlaySetCompact: (compact: boolean) => Promise<boolean>
+  onOverlayCompact: (cb: (compact: boolean) => void) => () => void
   onTrophyUnlock: (cb: (p: TrophyUnlockPayload) => void) => () => void
   onAchievementsUpdated: (cb: () => void) => () => void
 }

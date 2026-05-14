@@ -40,6 +40,12 @@ type StoreSchema = {
   achievements: StoredAchievement[]
   overlayBounds: { x: number; y: number; width: number; height: number } | null
   startWithSteamWatch: boolean
+  /** 0.2–1.0; whole overlay window (Steam trophy panel). */
+  overlayOpacity: number
+  /** True = thin strip; window stays on-screen (not OS minimize). */
+  overlayCompact: boolean
+  /** Bounds before entering compact (restored on expand). */
+  overlayExpandedBounds: { x: number; y: number; width: number; height: number } | null
 }
 
 const store = new Store<StoreSchema>({
@@ -50,7 +56,10 @@ const store = new Store<StoreSchema>({
     lastAchievementsJson: '',
     achievements: [],
     overlayBounds: null,
-    startWithSteamWatch: true
+    startWithSteamWatch: true,
+    overlayOpacity: 1,
+    overlayCompact: false,
+    overlayExpandedBounds: null
   }
 })
 
@@ -98,6 +107,73 @@ let steamPollTimer: ReturnType<typeof setInterval> | null = null
 let steamWatchTimer: ReturnType<typeof setInterval> | null = null
 let steamWasRunning = false
 let isQuitting = false
+
+function clampOverlayOpacity(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : Number.parseFloat(String(raw))
+  if (!Number.isFinite(n)) return 1
+  return Math.min(1, Math.max(0.2, n))
+}
+
+function applyOverlayOpacity(): void {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  overlayWindow.setOpacity(clampOverlayOpacity(store.get('overlayOpacity')))
+}
+
+const OVERLAY_COMPACT_HEIGHT = 64
+
+function emitOverlayCompactState(): void {
+  const compact = Boolean(store.get('overlayCompact'))
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:compact-changed', compact)
+  }
+}
+
+function applyOverlayCompactLayout(): void {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  const compact = Boolean(store.get('overlayCompact'))
+  const b = overlayWindow.getBounds()
+
+  if (compact) {
+    if (b.height > OVERLAY_COMPACT_HEIGHT + 24) {
+      store.set('overlayExpandedBounds', { x: b.x, y: b.y, width: b.width, height: b.height })
+    }
+    overlayWindow.setResizable(false)
+    overlayWindow.setMinimumSize(260, OVERLAY_COMPACT_HEIGHT)
+    const width = Math.max(260, b.width)
+    overlayWindow.setBounds(
+      { x: b.x, y: b.y, width, height: OVERLAY_COMPACT_HEIGHT },
+      true
+    )
+  } else {
+    overlayWindow.setMinimumSize(260, 400)
+    overlayWindow.setResizable(true)
+    const exp = store.get('overlayExpandedBounds')
+    const ob = store.get('overlayBounds')
+    const target =
+      exp && exp.width >= 260 && exp.height >= 400
+        ? exp
+        : ob && ob.width >= 260 && ob.height >= 400
+          ? ob
+          : null
+    if (target) {
+      overlayWindow.setBounds(
+        { x: target.x, y: target.y, width: target.width, height: target.height },
+        true
+      )
+      store.set('overlayBounds', {
+        x: target.x,
+        y: target.y,
+        width: target.width,
+        height: target.height
+      })
+    } else {
+      overlayWindow.setBounds({ x: b.x, y: b.y, width: 320, height: 520 }, true)
+    }
+  }
+  applyOverlayOpacity()
+  bumpOverlayAboveGames(overlayWindow)
+  emitOverlayCompactState()
+}
 
 const TINY_TRAY_PNG =
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMUlEQVQ4T2NkYGD4z0ABYBw1YDQ1QDQ1QDQ1QDQ1QDQ1QDQ1QDQ1QDQ1QDQ1QDQ1QDQ1QAAYYwT7vV6s6QAAAABJRU5ErkJggg=='
@@ -463,11 +539,17 @@ function createOverlayWindow(): void {
     shown = true
     bumpOverlayAboveGames(overlayWindow)
     overlayWindow.show()
+    applyOverlayOpacity()
   }
   overlayWindow.once('ready-to-show', tryShowOverlay)
   overlayWindow.webContents.once('did-finish-load', () => {
     if (overlayWindow && !overlayWindow.isDestroyed()) bumpOverlayAboveGames(overlayWindow)
     setTimeout(tryShowOverlay, 50)
+    if (store.get('overlayCompact')) {
+      setTimeout(() => {
+        if (overlayWindow && !overlayWindow.isDestroyed()) applyOverlayCompactLayout()
+      }, 120)
+    }
   })
   overlayWindow.webContents.once('did-fail-load', (_e, code, desc, url, isMainFrame) => {
     if (isMainFrame) console.error('[psteam] overlay failed to load', { code, desc, url })
@@ -496,7 +578,8 @@ function createOverlayWindow(): void {
 }
 
 function persistOverlayBounds(): void {
-  if (!overlayWindow) return
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  if (store.get('overlayCompact')) return
   const b = overlayWindow.getBounds()
   store.set('overlayBounds', { x: b.x, y: b.y, width: b.width, height: b.height })
 }
@@ -525,6 +608,7 @@ function createTray(): void {
         } else {
           bumpOverlayAboveGames(overlayWindow)
           overlayWindow.show()
+          applyOverlayOpacity()
         }
         startSteamPolling()
       }
@@ -598,6 +682,7 @@ function applySteamLaunchMode(): void {
     } else {
       bumpOverlayAboveGames(overlayWindow)
       overlayWindow.show()
+      applyOverlayOpacity()
     }
     startSteamPolling()
   }
@@ -658,8 +743,19 @@ ipcMain.handle('store:set', (_e, key: keyof StoreSchema, value: StoreSchema[keyo
   if (key === 'startWithSteamWatch') {
     applySteamLaunchMode()
   }
+  if (key === 'overlayOpacity') {
+    applyOverlayOpacity()
+  }
+  if (key === 'overlayCompact') {
+    applyOverlayCompactLayout()
+  }
 })
 ipcMain.handle('achievements:refresh', () => refreshAchievements())
+ipcMain.handle('overlay:set-compact', (_e, compact: boolean) => {
+  store.set('overlayCompact', Boolean(compact))
+  applyOverlayCompactLayout()
+  return Boolean(store.get('overlayCompact'))
+})
 ipcMain.handle('overlay:close', () => {
   overlayWindow?.hide()
 })

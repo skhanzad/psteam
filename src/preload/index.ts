@@ -19,6 +19,12 @@ const api = {
   achievementsRefresh: () => ipcRenderer.invoke('achievements:refresh'),
   overlayClose: () => ipcRenderer.invoke('overlay:close'),
   openSettings: () => ipcRenderer.invoke('app:open-settings'),
+  overlaySetCompact: (compact: boolean) => ipcRenderer.invoke('overlay:set-compact', compact),
+  onOverlayCompact: (cb: (compact: boolean) => void) => {
+    const fn = (_e: Electron.IpcRendererEvent, v: boolean) => cb(v)
+    ipcRenderer.on('overlay:compact-changed', fn)
+    return () => ipcRenderer.removeListener('overlay:compact-changed', fn)
+  },
   onTrophyUnlock: (cb: (p: TrophyUnlockPayload) => void) => {
     const fn = (_e: Electron.IpcRendererEvent, payload: TrophyUnlockPayload) => cb(payload)
     ipcRenderer.on('trophy-unlock', fn)

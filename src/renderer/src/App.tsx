@@ -84,6 +84,7 @@ function OverlayView(): JSX.Element {
   const [list, setList] = useState<StoredAchievement[]>([])
   const [toast, setToast] = useState<TrophyUnlockPayload | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [compact, setCompact] = useState(false)
 
   const load = useCallback(async () => {
     const raw = await window.psteam.storeGet('achievements')
@@ -96,6 +97,17 @@ function OverlayView(): JSX.Element {
     else setLoadErr(null)
     void load()
   }, [load])
+
+  useEffect(() => {
+    void (async () => {
+      const c = await window.psteam.storeGet('overlayCompact')
+      setCompact(c === true)
+    })()
+    const offCompact = window.psteam.onOverlayCompact((v) => setCompact(v))
+    return () => {
+      offCompact()
+    }
+  }, [])
 
   useEffect(() => {
     void load()
@@ -124,17 +136,42 @@ function OverlayView(): JSX.Element {
   }, [list])
 
   return (
-    <div className="overlay-root">
+    <div className={`overlay-root${compact ? ' overlay-root--compact' : ''}`}>
       <div className="panel">
         <header className="overlay-header">
           <div className="title-block">
             <h1>Trophies</h1>
-            <p>Steam achievements · PS-style tiers</p>
+            {!compact ? (
+              <p>Steam achievements · PS-style tiers</p>
+            ) : (
+              <p className="compact-counts">
+                Unlocked: {list.filter((x) => x.achieved).length}/{list.length} · G {gold} · S {silver} · B {bronze}
+              </p>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <button type="button" className="icon-btn" title="Refresh" onClick={() => void tryRefresh()}>
               ↻
             </button>
+            {!compact ? (
+              <button
+                type="button"
+                className="icon-btn"
+                title="Minimize to strip (stays visible on screen)"
+                onClick={() => void window.psteam.overlaySetCompact(true)}
+              >
+                −
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="icon-btn"
+                title="Expand full trophy list"
+                onClick={() => void window.psteam.overlaySetCompact(false)}
+              >
+                ⤢
+              </button>
+            )}
             <button type="button" className="icon-btn" title="Settings" onClick={() => void window.psteam.openSettings()}>
               ⚙
             </button>
@@ -144,7 +181,8 @@ function OverlayView(): JSX.Element {
           </div>
         </header>
 
-        <div className="trophy-meter">
+        <div className="overlay-expanded-only">
+          <div className="trophy-meter">
           <div className="meter gold">
             <div className="label">Gold</div>
             <div className="count">{gold}</div>
@@ -196,9 +234,10 @@ function OverlayView(): JSX.Element {
             )
           })}
         </div>
+        </div>
       </div>
 
-      {toast ? (
+      {toast && !compact ? (
         <div className="toast-wrap">
           <div className="toast">
             <div className="toast-top">
@@ -225,6 +264,7 @@ function SettingsView(): JSX.Element {
   const [webApiKey, setWebApiKey] = useState('')
   const [appId, setAppId] = useState('')
   const [startWithSteamWatch, setStartWithSteamWatch] = useState(true)
+  const [overlayOpacity, setOverlayOpacity] = useState(1)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -234,6 +274,9 @@ function SettingsView(): JSX.Element {
       setWebApiKey(String(await window.psteam.storeGet('webApiKey')))
       setAppId(String(await window.psteam.storeGet('appId')))
       setStartWithSteamWatch(Boolean(await window.psteam.storeGet('startWithSteamWatch')))
+      const rawOp = await window.psteam.storeGet('overlayOpacity')
+      const n = typeof rawOp === 'number' ? rawOp : Number.parseFloat(String(rawOp))
+      setOverlayOpacity(Number.isFinite(n) ? Math.min(1, Math.max(0.2, n)) : 1)
     })()
   }, [])
 
@@ -243,6 +286,7 @@ function SettingsView(): JSX.Element {
     await window.psteam.storeSet('webApiKey', webApiKey.trim())
     await window.psteam.storeSet('appId', appId.trim())
     await window.psteam.storeSet('startWithSteamWatch', startWithSteamWatch)
+    await window.psteam.storeSet('overlayOpacity', overlayOpacity)
   }
 
   const refresh = async (): Promise<void> => {
@@ -288,6 +332,27 @@ function SettingsView(): JSX.Element {
         <div className="field">
           <label htmlFor="app">Game App ID</label>
           <input id="app" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="e.g. 1245620" />
+        </div>
+
+        <div className="field">
+          <label htmlFor="opacity">
+            Overlay opacity <span className="opacity-value">{Math.round(overlayOpacity * 100)}%</span>
+          </label>
+          <input
+            id="opacity"
+            type="range"
+            min={20}
+            max={100}
+            step={1}
+            value={Math.round(overlayOpacity * 100)}
+            onChange={(e) => {
+              const pct = Number(e.target.value)
+              const v = Math.min(1, Math.max(0.2, pct / 100))
+              setOverlayOpacity(v)
+              void window.psteam.storeSet('overlayOpacity', v)
+            }}
+          />
+          <p className="field-hint">Applies to the floating trophy window (20–100%).</p>
         </div>
 
         <label className="row-check">
