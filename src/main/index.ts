@@ -26,6 +26,10 @@ type StoredAchievement = {
   unlocktime: number
   globalPercent: number | null
   tier: TrophyTier
+  /** Steam CDN (GetSchemaForGame) — unlocked art */
+  icon?: string
+  /** Steam CDN — locked / grayscale art */
+  iconGray?: string
 }
 
 type StoreSchema = {
@@ -62,15 +66,19 @@ function tryHydrateStoreFromDotEnv(): void {
   }
   const keyMap: Record<string, 'webApiKey' | 'steamId' | 'appId'> = {
     WEB_API_KEY: 'webApiKey',
+    STEAM_WEB_API_KEY: 'webApiKey',
+    STEAM_API_KEY: 'webApiKey',
     STEAM_ID: 'steamId',
-    GAME_APP_ID: 'appId'
+    GAME_APP_ID: 'appId',
+    APP_ID: 'appId',
+    STEAM_APP_ID: 'appId'
   }
   for (const line of text.split(/\r?\n/)) {
     const t = line.trim()
     if (!t || t.startsWith('#')) continue
     const eq = t.indexOf('=')
     if (eq <= 0) continue
-    const k = t.slice(0, eq).trim()
+    const k = t.slice(0, eq).trim().replace(/^\uFEFF/, '')
     let v = t.slice(eq + 1).trim()
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
       v = v.slice(1, -1)
@@ -110,23 +118,82 @@ function isSteamRunning(): Promise<boolean> {
     .catch(() => false)
 }
 
-function tierFromGlobalPercent(percent: number | null): TrophyTier {
-  if (percent == null || Number.isNaN(percent)) return 'bronze'
-  if (percent <= 5) return 'gold'
-  if (percent <= 25) return 'silver'
+function parseSteamPercent(raw: number | string | undefined | null): number | null {
+  if (raw == null || raw === '') return null
+  const n = typeof raw === 'number' ? raw : Number.parseFloat(String(raw).replace(',', '.'))
+  return Number.isFinite(n) ? n : null
+}
+
+function tierFromGlobalPercent(percent: number | string | null | undefined): TrophyTier {
+  const n = parseSteamPercent(percent)
+  if (n == null) return 'bronze'
+  if (n <= 5) return 'gold'
+  if (n <= 25) return 'silver'
   return 'bronze'
+}
+
+/** Steam sometimes rejects anonymous / Node default user agents; use a normal browser UA. */
+const STEAM_FETCH_INIT: RequestInit = {
+  headers: {
+    Accept: 'application/json',
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  }
+}
+
+function achievementUnlocked(raw: number | boolean | string | undefined): boolean {
+  return raw === true || raw === 1 || raw === '1'
+}
+
+/** Logs to the terminal that runs Electron (main process). Long achievement arrays are truncated. */
+function deepTruncateForLog(value: unknown, maxRows: number, depth = 0): unknown {
+  if (depth > 14) return value
+  if (Array.isArray(value)) {
+    const first = value[0]
+    const looksLikeLongList =
+      value.length > maxRows &&
+      first &&
+      typeof first === 'object' &&
+      first !== null &&
+      ('apiname' in first || ('name' in first && 'percent' in first) || 'displayName' in first)
+    if (looksLikeLongList) {
+      return [
+        ...value.slice(0, maxRows).map((x) => deepTruncateForLog(x, maxRows, depth + 1)),
+        `… ${value.length - maxRows} more rows`
+      ]
+    }
+    return value.map((x) => deepTruncateForLog(x, maxRows, depth + 1))
+  }
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(o)) {
+      out[k] = deepTruncateForLog(v, maxRows, depth + 1) as unknown
+    }
+    return out
+  }
+  return value
+}
+
+function logSteamFetched(label: string, body: unknown): void {
+  const clipped = deepTruncateForLog(body, 50)
+  console.log(`[psteam:steam] ${label}:\n${JSON.stringify(clipped, null, 2)}`)
 }
 
 async function fetchGlobalPercents(appId: string): Promise<Map<string, number>> {
   const url = `https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?gameid=${encodeURIComponent(appId)}&format=json`
-  const res = await fetch(url)
+  const res = await fetch(url, STEAM_FETCH_INIT)
   if (!res.ok) throw new Error(`Global stats HTTP ${res.status}`)
   const data = (await res.json()) as {
-    achievementpercentages?: { achievements?: { name: string; percent: number }[] }
+    achievementpercentages?: { achievements?: { name: string; percent: number | string }[] }
   }
+  logSteamFetched(`GetGlobalAchievementPercentagesForApp (appid=${appId})`, data)
   const list = data.achievementpercentages?.achievements ?? []
   const map = new Map<string, number>()
-  for (const a of list) map.set(a.name, a.percent)
+  for (const a of list) {
+    const p = parseSteamPercent(a.percent)
+    if (p != null) map.set(a.name, p)
+  }
   return map
 }
 
@@ -137,31 +204,39 @@ async function fetchPlayerAchievements(
 ): Promise<
   {
     apiname: string
-    achieved: number
+    achieved: number | boolean | string
     unlocktime: number
     name?: string
     description?: string
   }[]
 > {
   const url = `https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/?key=${encodeURIComponent(key)}&steamid=${encodeURIComponent(steamId)}&appid=${encodeURIComponent(appId)}&l=english`
-  const res = await fetch(url)
+  const res = await fetch(url, STEAM_FETCH_INIT)
   if (!res.ok) throw new Error(`Player achievements HTTP ${res.status}`)
   const data = (await res.json()) as {
     playerstats?: {
       success?: boolean
+      error?: string
       achievements?: {
         apiname: string
-        achieved: number
+        achieved: number | boolean | string
         unlocktime: number
         name?: string
         description?: string
       }[]
     }
   }
-  if (!data.playerstats) throw new Error('Steam API returned no player stats')
-  const list = data.playerstats.achievements ?? []
-  if (data.playerstats.success === false && list.length === 0) {
-    throw new Error('Could not read achievements (check Steam ID, App ID, and profile privacy).')
+  logSteamFetched(`GetPlayerAchievements (steamid=${steamId} appid=${appId})`, data)
+  const ps = data.playerstats
+  if (!ps) throw new Error('Steam API returned no player stats')
+  if (typeof ps.error === 'string' && ps.error.trim()) {
+    throw new Error(ps.error.trim())
+  }
+  const list = ps.achievements ?? []
+  if (ps.success === false && list.length === 0) {
+    throw new Error(
+      'Could not read achievements (check Steam ID, App ID, and Steam profile privacy: Game details must be public).'
+    )
   }
   return list
 }
@@ -169,21 +244,33 @@ async function fetchPlayerAchievements(
 async function fetchSchemaDisplay(
   key: string,
   appId: string
-): Promise<Map<string, { displayName: string; description: string }>> {
+): Promise<Map<string, { displayName: string; description: string; icon?: string; icongray?: string }>> {
   const url = `https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key=${encodeURIComponent(key)}&appid=${encodeURIComponent(appId)}&l=english`
-  const res = await fetch(url)
+  const res = await fetch(url, STEAM_FETCH_INIT)
   if (!res.ok) throw new Error(`Schema HTTP ${res.status}`)
   const data = (await res.json()) as {
     game?: {
       availableGameStats?: {
-        achievements?: { name: string; displayName: string; description?: string }[]
+        achievements?: {
+          name: string
+          displayName: string
+          description?: string
+          icon?: string
+          icongray?: string
+        }[]
       }
     }
   }
+  logSteamFetched(`GetSchemaForGame (appid=${appId})`, data)
   const list = data.game?.availableGameStats?.achievements ?? []
-  const map = new Map<string, { displayName: string; description: string }>()
+  const map = new Map<string, { displayName: string; description: string; icon?: string; icongray?: string }>()
   for (const a of list) {
-    map.set(a.name, { displayName: a.displayName, description: a.description ?? '' })
+    map.set(a.name, {
+      displayName: a.displayName,
+      description: a.description ?? '',
+      icon: a.icon,
+      icongray: a.icongray
+    })
   }
   return map
 }
@@ -191,36 +278,81 @@ async function fetchSchemaDisplay(
 function mergeAchievements(
   player: Awaited<ReturnType<typeof fetchPlayerAchievements>>,
   globalMap: Map<string, number>,
-  schemaMap: Map<string, { displayName: string; description: string }>
+  schemaMap: Map<string, { displayName: string; description: string; icon?: string; icongray?: string }>
 ): StoredAchievement[] {
-  return player.map((a) => {
-    const pct = globalMap.get(a.apiname) ?? null
-    const meta = schemaMap.get(a.apiname)
-    return {
-      apiname: a.apiname,
-      displayName: meta?.displayName ?? a.name ?? a.apiname,
-      description: meta?.description ?? a.description ?? '',
-      achieved: a.achieved === 1,
-      unlocktime: a.unlocktime,
-      globalPercent: pct,
-      tier: tierFromGlobalPercent(pct)
+  if (player.length > 0) {
+    return player.map((a) => {
+      const pct = globalMap.get(a.apiname) ?? null
+      const meta = schemaMap.get(a.apiname)
+      return {
+        apiname: a.apiname,
+        displayName: meta?.displayName ?? a.name ?? a.apiname,
+        description: meta?.description ?? a.description ?? '',
+        achieved: achievementUnlocked(a.achieved),
+        unlocktime: a.unlocktime,
+        globalPercent: pct,
+        tier: tierFromGlobalPercent(pct),
+        icon: meta?.icon,
+        iconGray: meta?.icongray
+      }
+    })
+  }
+
+  /** Player list empty but schema exists (e.g. odd API edge) — still show all trophies as locked. */
+  if (schemaMap.size > 0) {
+    const out: StoredAchievement[] = []
+    for (const apiname of schemaMap.keys()) {
+      const meta = schemaMap.get(apiname)!
+      const pct = globalMap.get(apiname) ?? null
+      out.push({
+        apiname,
+        displayName: meta.displayName,
+        description: meta.description,
+        achieved: false,
+        unlocktime: 0,
+        globalPercent: pct,
+        tier: tierFromGlobalPercent(pct),
+        icon: meta.icon,
+        iconGray: meta.icongray
+      })
     }
-  })
+    return out.sort((a, b) => a.displayName.localeCompare(b.displayName))
+  }
+
+  /** No schema row — build from global stats (no key required for global; often still lists achievements). */
+  if (globalMap.size > 0) {
+    return [...globalMap.entries()]
+      .map(([apiname, pct]) => ({
+        apiname,
+        displayName: apiname,
+        description: '',
+        achieved: false,
+        unlocktime: 0,
+        globalPercent: pct,
+        tier: tierFromGlobalPercent(pct)
+      }))
+      .sort((a, b) => a.apiname.localeCompare(b.apiname))
+  }
+
+  return []
 }
 
 function broadcastNewUnlocks(previous: StoredAchievement[], next: StoredAchievement[]): void {
   const prevUnlocked = new Set(previous.filter((x) => x.achieved).map((x) => x.apiname))
   for (const a of next) {
     if (a.achieved && !prevUnlocked.has(a.apiname)) {
+      const iconUrl = a.icon || a.iconGray
       overlayWindow?.webContents.send('trophy-unlock', {
         displayName: a.displayName,
         tier: a.tier,
-        description: a.description
+        description: a.description,
+        iconUrl
       })
       mainWindow?.webContents.send('trophy-unlock', {
         displayName: a.displayName,
         tier: a.tier,
-        description: a.description
+        description: a.description,
+        iconUrl
       })
     }
   }
@@ -241,6 +373,10 @@ async function refreshAchievements(): Promise<StoredAchievement[] | { error: str
     ])
     const previous = store.get('achievements')
     const merged = mergeAchievements(player, globalMap, schemaMap)
+    logSteamFetched(
+      `merged trophies (${merged.length})`,
+      merged.length > 80 ? [...merged.slice(0, 80), `… ${merged.length - 80} more`] : merged
+    )
     broadcastNewUnlocks(previous, merged)
     store.set('achievements', merged)
     store.set('lastAchievementsJson', JSON.stringify(merged))
@@ -286,13 +422,27 @@ function createOverlayWindow(): void {
   const defaultX = primary.workArea.x + primary.workArea.width - w - 12
   const defaultY = primary.workArea.y + 12
 
+  /** Default `show` is true — that flashes an empty transparent window before paint on Windows. */
+  const winOpts =
+    process.platform === 'win32'
+      ? {
+          /** Frameless + fully transparent is flaky on some Windows/GPU stacks; solid chrome still reads as an overlay. */
+          transparent: false as const,
+          backgroundColor: '#0b0f1a'
+        }
+      : {
+          transparent: true as const,
+          backgroundColor: '#00000000' as const
+        }
+
   overlayWindow = new BrowserWindow({
     width: saved?.width ?? w,
     height: saved?.height ?? h,
     x: saved?.x ?? defaultX,
     y: saved?.y ?? defaultY,
     frame: false,
-    transparent: true,
+    show: false,
+    ...winOpts,
     hasShadow: true,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -306,22 +456,37 @@ function createOverlayWindow(): void {
       additionalArguments: ['--psteam-overlay']
     }
   })
-  bumpOverlayAboveGames(overlayWindow)
+
+  let shown = false
+  const tryShowOverlay = (): void => {
+    if (shown || !overlayWindow || overlayWindow.isDestroyed()) return
+    shown = true
+    bumpOverlayAboveGames(overlayWindow)
+    overlayWindow.show()
+  }
+  overlayWindow.once('ready-to-show', tryShowOverlay)
+  overlayWindow.webContents.once('did-finish-load', () => {
+    if (overlayWindow && !overlayWindow.isDestroyed()) bumpOverlayAboveGames(overlayWindow)
+    setTimeout(tryShowOverlay, 50)
+  })
+  overlayWindow.webContents.once('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (isMainFrame) console.error('[psteam] overlay failed to load', { code, desc, url })
+  })
+  /** If ready-to-show never fires, still surface the window (e.g. stuck navigation). */
+  setTimeout(tryShowOverlay, 4000)
 
   if (process.env.ELECTRON_RENDERER_URL) {
     const base = process.env.ELECTRON_RENDERER_URL.replace(/\/$/, '')
-    const sep = base.includes('?') ? '&' : '?'
-    void overlayWindow.loadURL(`${base}${sep}psteam=overlay#overlay`)
+    const u = new URL(`${base}/`)
+    u.searchParams.set('psteam', 'overlay')
+    u.hash = 'overlay'
+    void overlayWindow.loadURL(u.href)
   } else {
     void overlayWindow.loadFile(join(mainDir, '../renderer/index.html'), {
       hash: 'overlay',
       query: { psteam: 'overlay' }
     })
   }
-
-  overlayWindow.webContents.once('did-finish-load', () => {
-    if (overlayWindow && !overlayWindow.isDestroyed()) bumpOverlayAboveGames(overlayWindow)
-  })
 
   overlayWindow.on('moved', persistOverlayBounds)
   overlayWindow.on('resized', persistOverlayBounds)
@@ -338,8 +503,12 @@ function persistOverlayBounds(): void {
 
 /** Keep the panel above games where the OS allows it (not true exclusive fullscreen). */
 function bumpOverlayAboveGames(win: BrowserWindow): void {
-  win.setAlwaysOnTop(true, 'screen-saver')
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (process.platform === 'darwin') {
+    win.setAlwaysOnTop(true, 'screen-saver')
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  } else {
+    win.setAlwaysOnTop(true)
+  }
   win.moveTop()
 }
 
@@ -351,8 +520,9 @@ function createTray(): void {
     {
       label: 'Show overlay',
       click: () => {
-        if (!overlayWindow) createOverlayWindow()
-        if (overlayWindow) {
+        if (!overlayWindow) {
+          createOverlayWindow()
+        } else {
           bumpOverlayAboveGames(overlayWindow)
           overlayWindow.show()
         }
@@ -396,10 +566,6 @@ function ensureOverlayForSteam(running: boolean): void {
   if (!store.get('startWithSteamWatch')) return
   if (running && !overlayWindow) {
     createOverlayWindow()
-    if (overlayWindow) {
-      bumpOverlayAboveGames(overlayWindow)
-      overlayWindow.show()
-    }
     startSteamPolling()
   }
   if (!running && overlayWindow) {
@@ -427,8 +593,9 @@ function applySteamLaunchMode(): void {
     })
   } else {
     steamWasRunning = false
-    if (!overlayWindow) createOverlayWindow()
-    if (overlayWindow) {
+    if (!overlayWindow) {
+      createOverlayWindow()
+    } else {
       bumpOverlayAboveGames(overlayWindow)
       overlayWindow.show()
     }

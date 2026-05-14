@@ -4,6 +4,8 @@ export type TrophyUnlockPayload = {
   displayName: string
   tier: TrophyTier
   description: string
+  /** Steam schema icon (HTTPS) */
+  iconUrl?: string
 }
 
 export type StoredAchievement = {
@@ -14,6 +16,8 @@ export type StoredAchievement = {
   unlocktime: number
   globalPercent: number | null
   tier: TrophyTier
+  icon?: string
+  iconGray?: string
 }
 
 export type PsteamApi = {

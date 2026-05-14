@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { StoredAchievement, TrophyTier, TrophyUnlockPayload } from './types'
 
 function isOverlay(): boolean {
-  if (window.psteam.isOverlayWindow) return true
-  if (window.location.hash.replace(/^#/, '') === 'overlay') return true
-  return new URLSearchParams(window.location.search).get('psteam') === 'overlay'
+  // URL first: avoids a throw if `window.psteam` is missing, and survives when
+  // `--psteam-overlay` is not present on the preload argv (hash/query still set from main).
+  const hash = window.location.hash.replace(/^#/, '')
+  if (hash === 'overlay') return true
+  if (new URLSearchParams(window.location.search).get('psteam') === 'overlay') return true
+  return Boolean(window.psteam?.isOverlayWindow)
 }
 
 function tierLabel(t: TrophyTier): string {
@@ -22,14 +25,69 @@ function countsByTier(list: StoredAchievement[]): { gold: number; silver: number
   }
 }
 
+function formatGlobalPercent(p: number | string | null | undefined): string {
+  if (p == null || p === '') return 'Global % unknown'
+  const n = typeof p === 'number' ? p : Number.parseFloat(String(p).replace(',', '.'))
+  if (!Number.isFinite(n)) return 'Global % unknown'
+  return `${n.toFixed(1)}% of players`
+}
+
+function trophyImageSrc(a: StoredAchievement): string | undefined {
+  if (a.achieved) return a.icon || a.iconGray
+  return a.iconGray || a.icon
+}
+
+function normalizeAchievementRow(raw: unknown): StoredAchievement | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.apiname !== 'string') return null
+  const gpRaw = o.globalPercent
+  let globalPercent: number | null = null
+  if (typeof gpRaw === 'number' && Number.isFinite(gpRaw)) globalPercent = gpRaw
+  else if (typeof gpRaw === 'string') {
+    const x = Number.parseFloat(gpRaw.replace(',', '.'))
+    globalPercent = Number.isFinite(x) ? x : null
+  }
+  const tier = (['gold', 'silver', 'bronze'].includes(String(o.tier)) ? o.tier : 'bronze') as TrophyTier
+  return {
+    apiname: o.apiname,
+    displayName: typeof o.displayName === 'string' ? o.displayName : String(o.apiname),
+    description: typeof o.description === 'string' ? o.description : '',
+    achieved: Boolean(o.achieved),
+    unlocktime: typeof o.unlocktime === 'number' && Number.isFinite(o.unlocktime) ? o.unlocktime : 0,
+    globalPercent,
+    tier,
+    icon: typeof o.icon === 'string' ? o.icon : undefined,
+    iconGray: typeof o.iconGray === 'string' ? o.iconGray : undefined
+  }
+}
+
+function normalizeAchievementsFromStore(raw: unknown): StoredAchievement[] {
+  if (Array.isArray(raw)) {
+    return raw.map(normalizeAchievementRow).filter((x): x is StoredAchievement => x != null)
+  }
+  if (raw && typeof raw === 'object') {
+    const vals = Object.values(raw as Record<string, unknown>)
+    if (
+      vals.length > 0 &&
+      typeof vals[0] === 'object' &&
+      vals[0] !== null &&
+      'apiname' in (vals[0] as object)
+    ) {
+      return vals.map(normalizeAchievementRow).filter((x): x is StoredAchievement => x != null)
+    }
+  }
+  return []
+}
+
 function OverlayView(): JSX.Element {
   const [list, setList] = useState<StoredAchievement[]>([])
   const [toast, setToast] = useState<TrophyUnlockPayload | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const raw = (await window.psteam.storeGet('achievements')) as StoredAchievement[]
-    setList(Array.isArray(raw) ? raw : [])
+    const raw = await window.psteam.storeGet('achievements')
+    setList(normalizeAchievementsFromStore(raw))
   }, [])
 
   const tryRefresh = useCallback(async () => {
@@ -110,23 +168,33 @@ function OverlayView(): JSX.Element {
         <div className="list">
           {sorted.length === 0 && !loadErr ? (
             <p className="pct" style={{ padding: '12px 8px' }}>
-              No trophy data yet. Open settings (⚙), set your Web API key, Steam ID, and this game&apos;s App ID, then
-              save and refresh.
+              No trophy data yet. Open settings (⚙), confirm your Web API key, 64-bit Steam ID, and the game&apos;s App
+              ID, then Save &amp; refresh. On Steam, set Profile → Edit Profile → Privacy Settings → Game details to{' '}
+              <strong>Public</strong> so the Web API can read achievements.
             </p>
           ) : null}
-          {sorted.map((a) => (
-            <div key={a.apiname} className={`row ${a.achieved ? '' : 'locked'}`}>
-              <div className={`badge ${a.tier}`}>{tierLabel(a.tier)}</div>
-              <div className="row-body">
-                <h2>{a.displayName}</h2>
-                {a.description ? <p>{a.description}</p> : null}
-                <div className="pct">
-                  {a.globalPercent != null ? `${a.globalPercent.toFixed(1)}% of players` : 'Global % unknown'}
-                  {!a.achieved ? ' · locked' : ''}
+          {sorted.map((a) => {
+            const img = trophyImageSrc(a)
+            return (
+              <div key={a.apiname} className={`row ${a.achieved ? '' : 'locked'}`}>
+                {img ? (
+                  <div className={`trophy-thumb-wrap tier-ring-${a.tier}`}>
+                    <img className="trophy-thumb" src={img} alt="" draggable={false} />
+                  </div>
+                ) : (
+                  <div className={`badge ${a.tier}`}>{tierLabel(a.tier)}</div>
+                )}
+                <div className="row-body">
+                  <h2>{a.displayName}</h2>
+                  {a.description ? <p>{a.description}</p> : null}
+                  <div className="pct">
+                    {formatGlobalPercent(a.globalPercent)}
+                    {!a.achieved ? ' · locked' : ''}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 
@@ -134,7 +202,11 @@ function OverlayView(): JSX.Element {
         <div className="toast-wrap">
           <div className="toast">
             <div className="toast-top">
-              <div className={`badge ${toast.tier}`}>{tierLabel(toast.tier)}</div>
+              {toast.iconUrl ? (
+                <img className="toast-thumb" src={toast.iconUrl} alt="" draggable={false} />
+              ) : (
+                <div className={`badge ${toast.tier}`}>{tierLabel(toast.tier)}</div>
+              )}
               <div>
                 <div className="trophy-word">Trophy unlocked</div>
                 <h3>{toast.displayName}</h3>

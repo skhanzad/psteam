@@ -6,6 +6,7 @@ type TrophyUnlockPayload = {
   displayName: string
   tier: TrophyTier
   description: string
+  iconUrl?: string
 }
 
 /** Set on the overlay BrowserWindow via webPreferences.additionalArguments */
