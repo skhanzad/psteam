@@ -658,6 +658,9 @@ function createOverlayWindow(): void {
 
   overlayWindow.on('moved', persistOverlayBounds)
   overlayWindow.on('resized', persistOverlayBounds)
+  overlayWindow.on('focus', () => {
+    if (overlayWindow && !overlayWindow.isDestroyed()) bumpOverlayAboveGames(overlayWindow)
+  })
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })
@@ -676,7 +679,11 @@ function bumpOverlayAboveGames(win: BrowserWindow): void {
     win.setAlwaysOnTop(true, 'screen-saver')
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   } else {
-    win.setAlwaysOnTop(true)
+    try {
+      win.setAlwaysOnTop(true, 'screen-saver')
+    } catch {
+      win.setAlwaysOnTop(true)
+    }
   }
   win.moveTop()
 }
@@ -860,6 +867,11 @@ ipcMain.handle('overlay:set-compact', (_e, compact: boolean) => {
 })
 ipcMain.handle('overlay:close', () => {
   overlayWindow?.hide()
+})
+ipcMain.handle('overlay:bump-z-order', () => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  bumpOverlayAboveGames(overlayWindow)
+  overlayWindow.focus()
 })
 ipcMain.handle('app:open-settings', () => {
   mainWindow?.show()

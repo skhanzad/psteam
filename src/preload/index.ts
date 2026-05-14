@@ -18,6 +18,7 @@ const api = {
   storeSet: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
   achievementsRefresh: () => ipcRenderer.invoke('achievements:refresh'),
   overlayClose: () => ipcRenderer.invoke('overlay:close'),
+  overlayBumpZOrder: () => ipcRenderer.invoke('overlay:bump-z-order'),
   openSettings: () => ipcRenderer.invoke('app:open-settings'),
   overlaySetCompact: (compact: boolean) => ipcRenderer.invoke('overlay:set-compact', compact),
   onOverlayCompact: (cb: (compact: boolean) => void) => {

@@ -99,6 +99,15 @@ function OverlayView(): JSX.Element {
   }, [load])
 
   useEffect(() => {
+    document.documentElement.classList.add('psteam-overlay')
+    document.body.classList.add('psteam-overlay')
+    return () => {
+      document.documentElement.classList.remove('psteam-overlay')
+      document.body.classList.remove('psteam-overlay')
+    }
+  }, [])
+
+  useEffect(() => {
     void (async () => {
       const c = await window.psteam.storeGet('overlayCompact')
       setCompact(c === true)
@@ -136,7 +145,12 @@ function OverlayView(): JSX.Element {
   }, [list])
 
   return (
-    <div className={`overlay-root${compact ? ' overlay-root--compact' : ''}`}>
+    <div
+      className={`overlay-root${compact ? ' overlay-root--compact' : ''}`}
+      onPointerDownCapture={() => {
+        void window.psteam.overlayBumpZOrder()
+      }}
+    >
       <div className="panel">
         <header className="overlay-header">
           <div className="title-block">

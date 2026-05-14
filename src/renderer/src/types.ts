@@ -27,6 +27,8 @@ export type PsteamApi = {
   storeSet: (key: string, value: unknown) => Promise<void>
   achievementsRefresh: () => Promise<StoredAchievement[] | { error: string }>
   overlayClose: () => Promise<void>
+  /** Re-raise overlay above the game after interaction (z-order / focus). */
+  overlayBumpZOrder: () => Promise<void>
   openSettings: () => Promise<void>
   /** Shrink overlay to a thin on-screen strip (not taskbar minimize). */
   overlaySetCompact: (compact: boolean) => Promise<boolean>
