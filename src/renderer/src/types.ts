@@ -20,12 +20,31 @@ export type StoredAchievement = {
   iconGray?: string
 }
 
+export type DashboardTierCounts = {
+  gold: number
+  silver: number
+  bronze: number
+}
+
+export type DashboardGameStats = {
+  steamId: string
+  appId: string
+  gameName: string
+  totalTrophies: number
+  unlockedTrophies: number
+  progressPercent: number
+  tierTotal: DashboardTierCounts
+  tierUnlocked: DashboardTierCounts
+  platinumEarned: boolean
+  mergedSavedAt?: string
+}
+
 export type PsteamApi = {
   /** True only in the floating trophy window (not the settings window). */
   isOverlayWindow: boolean
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>
-  achievementsRefresh: () => Promise<StoredAchievement[] | { error: string }>
+  achievementsRefresh: (opts?: { forceNetwork?: boolean }) => Promise<StoredAchievement[] | { error: string }>
   overlayClose: () => Promise<void>
   /** Re-raise overlay above the game after interaction (z-order / focus). */
   overlayBumpZOrder: () => Promise<void>
@@ -35,6 +54,8 @@ export type PsteamApi = {
   onOverlayCompact: (cb: (compact: boolean) => void) => () => void
   onTrophyUnlock: (cb: (p: TrophyUnlockPayload) => void) => () => void
   onAchievementsUpdated: (cb: () => void) => () => void
+  /** Aggregated stats for all cached games (current Steam ID). */
+  dashboardListGames: () => Promise<DashboardGameStats[]>
 }
 
 declare global {

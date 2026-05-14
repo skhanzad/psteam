@@ -16,7 +16,8 @@ const api = {
   isOverlayWindow,
   storeGet: <K extends string>(key: K) => ipcRenderer.invoke('store:get', key),
   storeSet: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
-  achievementsRefresh: () => ipcRenderer.invoke('achievements:refresh'),
+  achievementsRefresh: (opts?: { forceNetwork?: boolean }) =>
+    ipcRenderer.invoke('achievements:refresh', opts ?? {}),
   overlayClose: () => ipcRenderer.invoke('overlay:close'),
   overlayBumpZOrder: () => ipcRenderer.invoke('overlay:bump-z-order'),
   openSettings: () => ipcRenderer.invoke('app:open-settings'),
@@ -35,7 +36,8 @@ const api = {
     const fn = () => cb()
     ipcRenderer.on('achievements:updated', fn)
     return () => ipcRenderer.removeListener('achievements:updated', fn)
-  }
+  },
+  dashboardListGames: () => ipcRenderer.invoke('dashboard:list-games')
 }
 
 contextBridge.exposeInMainWorld('psteam', api)

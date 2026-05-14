@@ -6,6 +6,8 @@ import { exec } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import { promisify } from 'node:util'
 import Store from 'electron-store'
+import * as persist from './persistence'
+import { trophyRecordToDashboardStats, type DashboardGameStats } from './dashboard'
 
 const execAsync = promisify(exec)
 
@@ -81,6 +83,10 @@ type StoreSchema = {
   autoDetectGame: boolean
   /** Last non-empty title from presence (for settings hint). */
   detectedGameName: string
+  /** Optional MongoDB connection (e.g. mongodb+srv://…). Empty = file-only persistence. */
+  mongoUri: string
+  /** MongoDB database name when `mongoUri` is set. */
+  mongoDbName: string
 }
 
 const store = new Store<StoreSchema>({
@@ -96,7 +102,9 @@ const store = new Store<StoreSchema>({
     overlayCompact: false,
     overlayExpandedBounds: null,
     autoDetectGame: true,
-    detectedGameName: ''
+    detectedGameName: '',
+    mongoUri: '',
+    mongoDbName: 'psteam'
   }
 })
 
@@ -110,14 +118,18 @@ function tryHydrateStoreFromDotEnv(): void {
   } catch {
     return
   }
-  const keyMap: Record<string, 'webApiKey' | 'steamId' | 'appId'> = {
+  const keyMap: Record<string, 'webApiKey' | 'steamId' | 'appId' | 'mongoUri' | 'mongoDbName'> = {
     WEB_API_KEY: 'webApiKey',
     STEAM_WEB_API_KEY: 'webApiKey',
     STEAM_API_KEY: 'webApiKey',
     STEAM_ID: 'steamId',
     GAME_APP_ID: 'appId',
     APP_ID: 'appId',
-    STEAM_APP_ID: 'appId'
+    STEAM_APP_ID: 'appId',
+    MONGODB_URI: 'mongoUri',
+    MONGODB_URL: 'mongoUri',
+    MONGODB_DB: 'mongoDbName',
+    MONGODB_DATABASE: 'mongoDbName'
   }
   for (const line of text.split(/\r?\n/)) {
     const t = line.trim()
@@ -131,7 +143,9 @@ function tryHydrateStoreFromDotEnv(): void {
     }
     const storeKey = keyMap[k]
     if (!storeKey) continue
-    if (!store.get(storeKey).trim()) store.set(storeKey, v)
+    const cur = store.get(storeKey)
+    const empty = typeof cur === 'string' ? !cur.trim() : cur == null || cur === ''
+    if (empty) store.set(storeKey, v as never)
   }
 }
 
@@ -372,6 +386,18 @@ async function fetchCurrentlyPlayedGame(key: string, steamId: string): Promise<{
   return { appId: gid, name }
 }
 
+async function hydrateLastGameFromCacheIfNeeded(): Promise<void> {
+  if (!store.get('autoDetectGame')) return
+  if (store.get('appId').trim()) return
+  const steamId = store.get('steamId').trim()
+  if (!steamId) return
+  const c = await persist.readLastGameCache()
+  if (c && c.steamId === steamId && c.appId.trim()) {
+    store.set('appId', c.appId.trim())
+    if (c.gameName) store.set('detectedGameName', c.gameName)
+  }
+}
+
 async function syncActiveGameFromPresence(): Promise<boolean> {
   if (!store.get('autoDetectGame')) return false
   const key = store.get('webApiKey').trim()
@@ -381,6 +407,12 @@ async function syncActiveGameFromPresence(): Promise<boolean> {
     const g = await fetchCurrentlyPlayedGame(key, steamId)
     if (!g) return false
     store.set('detectedGameName', g.name)
+    await persist.writeLastGameCache({
+      steamId,
+      appId: g.appId,
+      gameName: g.name,
+      updatedAt: Date.now()
+    })
     const prev = store.get('appId').trim()
     if (g.appId !== prev) {
       store.set('appId', g.appId)
@@ -388,6 +420,11 @@ async function syncActiveGameFromPresence(): Promise<boolean> {
     }
     return false
   } catch {
+    const c = await persist.readLastGameCache()
+    if (c && c.steamId === steamId && c.appId.trim() && !store.get('appId').trim()) {
+      store.set('appId', c.appId.trim())
+      if (c.gameName) store.set('detectedGameName', c.gameName)
+    }
     return false
   }
 }
@@ -533,7 +570,21 @@ function broadcastNewUnlocks(previous: StoredAchievement[], next: StoredAchievem
   else emitPlatinum()
 }
 
-async function refreshAchievements(opts?: { skipPresenceSync?: boolean }): Promise<StoredAchievement[] | { error: string }> {
+function publishAchievements(merged: StoredAchievement[]): StoredAchievement[] {
+  const previous = store.get('achievements')
+  broadcastNewUnlocks(previous, merged)
+  store.set('achievements', merged)
+  store.set('lastAchievementsJson', JSON.stringify(merged))
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('achievements:updated')
+  }
+  return merged
+}
+
+async function refreshAchievements(opts?: {
+  skipPresenceSync?: boolean
+  forceNetwork?: boolean
+}): Promise<StoredAchievement[] | { error: string }> {
   if (!opts?.skipPresenceSync) {
     await syncActiveGameFromPresence()
   }
@@ -549,35 +600,131 @@ async function refreshAchievements(opts?: { skipPresenceSync?: boolean }): Promi
         'No Steam game detected. Launch a game with your Steam profile’s Game details set to Public, or turn off “Detect active game” and enter an App ID manually.'
     }
   }
+
+  const force = Boolean(opts?.forceNetwork)
+  const record = await persist.readTrophyGameRecord(steamId, appId)
+
+  if (
+    !force &&
+    record?.lastMerged &&
+    Array.isArray(record.lastMerged) &&
+    record.lastMerged.length > 0 &&
+    persist.msSince(record.mergedSavedAt) < persist.TTL_MS.fullSnapshot
+  ) {
+    const merged = record.lastMerged as StoredAchievement[]
+    console.log('[psteam] trophies: using full snapshot cache (skip Steam HTTP)')
+    return publishAchievements(merged)
+  }
+
   try {
-    const [globalMap, player, schemaMap] = await Promise.all([
-      fetchGlobalPercents(appId),
-      fetchPlayerAchievements(key, steamId, appId),
-      fetchSchemaDisplay(key, appId)
-    ])
-    const previous = store.get('achievements')
+    const pStale =
+      force || !record?.player?.length || persist.msSince(record.playerFetchedAt) >= persist.TTL_MS.player
+    const sStale =
+      force ||
+      !record?.globalEntries?.length ||
+      !record?.schemaEntries?.length ||
+      persist.msSince(record.globalFetchedAt) >= persist.TTL_MS.static ||
+      persist.msSince(record.schemaFetchedAt) >= persist.TTL_MS.static
+
+    let player: Awaited<ReturnType<typeof fetchPlayerAchievements>>
+    let globalMap: Map<string, number>
+    let schemaMap: Map<string, { displayName: string; description: string; icon?: string; icongray?: string }>
+
+    const nowIso = new Date().toISOString()
+
+    if (!pStale && record?.player?.length) {
+      player = record.player
+    } else {
+      player = await fetchPlayerAchievements(key, steamId, appId)
+    }
+
+    if (!sStale && record?.globalEntries?.length && record?.schemaEntries?.length) {
+      const m = persist.mapsFromRecord(record)
+      globalMap = m.globalMap
+      schemaMap = m.schemaMap
+    } else {
+      const [g, sch] = await Promise.all([fetchGlobalPercents(appId), fetchSchemaDisplay(key, appId)])
+      globalMap = g
+      schemaMap = sch
+    }
+
     const merged = mergeAchievements(player, globalMap, schemaMap)
     logSteamFetched(
       `merged trophies (${merged.length})`,
       merged.length > 80 ? [...merged.slice(0, 80), `… ${merged.length - 80} more`] : merged
     )
-    broadcastNewUnlocks(previous, merged)
-    store.set('achievements', merged)
-    store.set('lastAchievementsJson', JSON.stringify(merged))
-    for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('achievements:updated')
-    }
-    return merged
+
+    await persist.writeTrophyGameRecord({
+      steamId,
+      appId,
+      gameName: store.get('detectedGameName')?.trim() || undefined,
+      player,
+      playerFetchedAt: pStale ? nowIso : record?.playerFetchedAt ?? nowIso,
+      globalEntries: [...globalMap.entries()],
+      globalFetchedAt: sStale ? nowIso : record?.globalFetchedAt ?? nowIso,
+      schemaEntries: Array.from(schemaMap.entries()) as persist.TrophyGameRecord['schemaEntries'],
+      schemaFetchedAt: sStale ? nowIso : record?.schemaFetchedAt ?? nowIso,
+      lastMerged: merged,
+      mergedSavedAt: nowIso
+    })
+
+    return publishAchievements(merged)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
+    const rec = await persist.readTrophyGameRecord(steamId, appId)
+    const stale = rec?.lastMerged
+    if (Array.isArray(stale) && stale.length > 0) {
+      console.warn('[psteam] trophies: Steam request failed, using on-disk database snapshot:', msg)
+      return publishAchievements(stale as StoredAchievement[])
+    }
     return { error: msg }
   }
 }
 
+function mergedSavedAtMs(rec: persist.TrophyGameRecord | undefined): number {
+  const t = Date.parse(rec?.mergedSavedAt ?? '')
+  return Number.isFinite(t) ? t : 0
+}
+
+async function listDashboardGameStats(): Promise<DashboardGameStats[]> {
+  const steamId = store.get('steamId').trim()
+  if (!steamId) return []
+  const fromDisk = await persist.listAllTrophyGameRecords({ steamId })
+  const byKey = new Map<string, persist.TrophyGameRecord>()
+  for (const r of fromDisk) {
+    byKey.set(`${r.steamId.trim()}::${r.appId.trim()}`, r)
+  }
+  const appId = store.get('appId').trim()
+  const achievements = store.get('achievements')
+  if (appId && Array.isArray(achievements) && achievements.length > 0) {
+    const cur: persist.TrophyGameRecord = {
+      steamId,
+      appId,
+      gameName: store.get('detectedGameName')?.trim() || undefined,
+      lastMerged: achievements,
+      mergedSavedAt: new Date().toISOString()
+    }
+    const k = `${steamId}::${appId}`
+    const prev = byKey.get(k)
+    if (!prev || mergedSavedAtMs(cur) >= mergedSavedAtMs(prev)) {
+      byKey.set(k, {
+        ...prev,
+        ...cur,
+        gameName: cur.gameName || prev?.gameName,
+        mergedSavedAt: cur.mergedSavedAt
+      })
+    }
+  }
+  return [...byKey.values()]
+    .map((r) => trophyRecordToDashboardStats(r))
+    .filter((s) => s.totalTrophies > 0)
+    .sort((a, b) => b.progressPercent - a.progressPercent || a.gameName.localeCompare(b.gameName))
+}
+
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 440,
-    height: 560,
+    width: 960,
+    height: 820,
     show: false,
     icon: getWindowIconPath(),
     webPreferences: {
@@ -740,7 +887,7 @@ function createTray(): void {
     { type: 'separator' },
     {
       label: 'Refresh trophies',
-      click: () => void refreshAchievements()
+      click: () => void refreshAchievements({ forceNetwork: true })
     },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
@@ -845,7 +992,9 @@ function settingsComplete(): boolean {
   return Boolean(sid && key && (app || auto))
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await persist.setMongoConnectionOptions(store.get('mongoUri'), store.get('mongoDbName'))
+  await hydrateLastGameFromCacheIfNeeded()
   createMainWindow()
   createTray()
   applySteamLaunchMode()
@@ -865,6 +1014,7 @@ app.on('window-all-closed', () => {})
 
 app.on('before-quit', () => {
   isQuitting = true
+  void persist.closeMongoClient()
 })
 
 ipcMain.handle('store:get', (_e, key: keyof StoreSchema) => store.get(key))
@@ -879,11 +1029,28 @@ ipcMain.handle('store:set', (_e, key: keyof StoreSchema, value: StoreSchema[keyo
   if (key === 'overlayCompact') {
     applyOverlayCompactLayout()
   }
+  if (key === 'appId' && typeof value === 'string' && value.trim()) {
+    const sid = store.get('steamId').trim()
+    if (sid) {
+      void persist.writeLastGameCache({
+        steamId: sid,
+        appId: value.trim(),
+        gameName: store.get('detectedGameName') || '',
+        updatedAt: Date.now()
+      })
+    }
+  }
+  if (key === 'mongoUri' || key === 'mongoDbName') {
+    void persist.setMongoConnectionOptions(store.get('mongoUri'), store.get('mongoDbName'))
+  }
   if (key === 'autoDetectGame') {
     void refreshAchievements()
   }
 })
-ipcMain.handle('achievements:refresh', () => refreshAchievements())
+ipcMain.handle('achievements:refresh', (_e, payload?: { forceNetwork?: boolean }) =>
+  refreshAchievements({ forceNetwork: payload?.forceNetwork === true })
+)
+ipcMain.handle('dashboard:list-games', () => listDashboardGameStats())
 ipcMain.handle('overlay:set-compact', (_e, compact: boolean) => {
   store.set('overlayCompact', Boolean(compact))
   applyOverlayCompactLayout()

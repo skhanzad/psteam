@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { StoredAchievement, TrophyTier, TrophyUnlockPayload } from './types'
+import { DashboardView } from './DashboardView'
 
 function isOverlay(): boolean {
   // URL first: avoids a throw if `window.psteam` is missing, and survives when
@@ -320,6 +321,8 @@ function SettingsView(): JSX.Element {
   const [autoDetectGame, setAutoDetectGame] = useState(true)
   const [detectedGameName, setDetectedGameName] = useState('')
   const [overlayOpacity, setOverlayOpacity] = useState(1)
+  const [mongoUri, setMongoUri] = useState('')
+  const [mongoDbName, setMongoDbName] = useState('psteam')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -335,6 +338,8 @@ function SettingsView(): JSX.Element {
       const rawOp = await window.psteam.storeGet('overlayOpacity')
       const n = typeof rawOp === 'number' ? rawOp : Number.parseFloat(String(rawOp))
       setOverlayOpacity(Number.isFinite(n) ? Math.min(1, Math.max(0.2, n)) : 1)
+      setMongoUri(String(await window.psteam.storeGet('mongoUri') ?? ''))
+      setMongoDbName(String(await window.psteam.storeGet('mongoDbName') ?? 'psteam') || 'psteam')
     })()
   }, [])
 
@@ -346,6 +351,8 @@ function SettingsView(): JSX.Element {
     await window.psteam.storeSet('startWithSteamWatch', startWithSteamWatch)
     await window.psteam.storeSet('autoDetectGame', autoDetectGame)
     await window.psteam.storeSet('overlayOpacity', overlayOpacity)
+    await window.psteam.storeSet('mongoUri', mongoUri.trim())
+    await window.psteam.storeSet('mongoDbName', mongoDbName.trim() || 'psteam')
   }
 
   const refresh = async (): Promise<void> => {
@@ -353,7 +360,7 @@ function SettingsView(): JSX.Element {
     setErr(null)
     try {
       await save()
-      const res = await window.psteam.achievementsRefresh()
+      const res = await window.psteam.achievementsRefresh({ forceNetwork: true })
       if (res && 'error' in res) setErr(res.error)
       setAppId(String(await window.psteam.storeGet('appId')))
       setDetectedGameName(String(await window.psteam.storeGet('detectedGameName') ?? ''))
@@ -412,6 +419,33 @@ function SettingsView(): JSX.Element {
         </label>
 
         <div className="field">
+          <label htmlFor="mongo">MongoDB URI (optional)</label>
+          <input
+            id="mongo"
+            type="password"
+            autoComplete="off"
+            value={mongoUri}
+            onChange={(e) => setMongoUri(e.target.value)}
+            placeholder="mongodb+srv://user:pass@cluster.mongodb.net"
+          />
+          <p className="field-hint">
+            When set, last played game and per-game trophy snapshots sync to MongoDB (collections{' '}
+            <code>last_game_cache</code> and <code>trophy_games</code>); local JSON files are still written as a
+            fallback.
+          </p>
+        </div>
+
+        <div className="field">
+          <label htmlFor="mongoDb">MongoDB database name</label>
+          <input
+            id="mongoDb"
+            value={mongoDbName}
+            onChange={(e) => setMongoDbName(e.target.value)}
+            placeholder="psteam"
+          />
+        </div>
+
+        <div className="field">
           <label htmlFor="opacity">
             Overlay opacity <span className="opacity-value">{Math.round(overlayOpacity * 100)}%</span>
           </label>
@@ -442,6 +476,9 @@ function SettingsView(): JSX.Element {
         </label>
 
         <div className="actions">
+          <button type="button" className="btn" onClick={() => { window.location.hash = 'dashboard' }}>
+            Trophy dashboard
+          </button>
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void refresh()}>
             {busy ? 'Saving…' : 'Save & refresh'}
           </button>
@@ -452,13 +489,41 @@ function SettingsView(): JSX.Element {
         <p className="hint">
           Add PSteam to OS startup (Windows: shell:startup, Linux: autostart) so it can detect when Steam launches. The
           Web API key is stored only on your machine. With auto-detect on, the App ID field updates while you play; you
-          can still override it manually when auto-detect is off.
+          can still override it manually when auto-detect is off. The last played game and per-game trophy data are
+          cached on disk (and in MongoDB if you set a URI) so routine refreshes hit the Steam API less often; use Save
+          &amp; refresh to force a live fetch.
         </p>
       </div>
     </div>
   )
 }
 
+function mainRouteFromHash(): 'settings' | 'dashboard' {
+  const h = window.location.hash.replace(/^#/, '').toLowerCase()
+  return h === 'dashboard' ? 'dashboard' : 'settings'
+}
+
 export default function App(): JSX.Element {
-  return isOverlay() ? <OverlayView /> : <SettingsView />
+  const [route, setRoute] = useState<ReturnType<typeof mainRouteFromHash>>(mainRouteFromHash)
+
+  useEffect(() => {
+    const onHash = (): void => {
+      setRoute(mainRouteFromHash())
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  if (isOverlay()) return <OverlayView />
+  if (route === 'dashboard') {
+    return (
+      <DashboardView
+        onBack={() => {
+          window.location.hash = ''
+          setRoute('settings')
+        }}
+      />
+    )
+  }
+  return <SettingsView />
 }
