@@ -16,6 +16,37 @@ const preloadFile = existsSync(join(mainDir, '../preload/index.mjs'))
   : 'index.js'
 const preloadPath = join(mainDir, '../preload', preloadFile)
 
+/** Project `resources/` folder (repo root). Put `tray.png`, `icon.png`, or `logo.png` here (PNG or ICO). */
+const resourcesDir = join(mainDir, '../../resources')
+
+const APP_ICON_FILES = ['tray.png', 'icon.png', 'logo.png'] as const
+
+function findAppIconPath(): string | null {
+  for (const name of APP_ICON_FILES) {
+    const p = join(resourcesDir, name)
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
+/** Tray: small square; prefers file from `resources/`. */
+function loadTrayImage(): Electron.NativeImage {
+  const p = findAppIconPath()
+  if (p) {
+    const img = nativeImage.createFromPath(p)
+    if (!img.isEmpty()) {
+      const traySize = process.platform === 'darwin' ? 18 : process.platform === 'win32' ? 16 : 22
+      return img.resize({ width: traySize, height: traySize })
+    }
+  }
+  return nativeImage.createFromBuffer(Buffer.from(TINY_TRAY_PNG, 'base64'))
+}
+
+/** Taskbar / window icon (Windows/Linux); path from `resources/` or undefined. */
+function getWindowIconPath(): string | undefined {
+  return findAppIconPath() ?? undefined
+}
+
 type TrophyTier = 'gold' | 'silver' | 'bronze'
 
 type StoredAchievement = {
@@ -471,6 +502,7 @@ function createMainWindow(): void {
     width: 440,
     height: 560,
     show: false,
+    icon: getWindowIconPath(),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -518,6 +550,7 @@ function createOverlayWindow(): void {
     y: saved?.y ?? defaultY,
     frame: false,
     show: false,
+    icon: getWindowIconPath(),
     ...winOpts,
     hasShadow: true,
     alwaysOnTop: true,
@@ -596,7 +629,7 @@ function bumpOverlayAboveGames(win: BrowserWindow): void {
 }
 
 function createTray(): void {
-  const img = nativeImage.createFromBuffer(Buffer.from(TINY_TRAY_PNG, 'base64'))
+  const img = loadTrayImage()
   tray = new Tray(img)
   tray.setToolTip('PSteam trophies')
   const menu = Menu.buildFromTemplate([
