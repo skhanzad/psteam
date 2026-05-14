@@ -1,0 +1,33 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+type TrophyTier = 'gold' | 'silver' | 'bronze'
+
+type TrophyUnlockPayload = {
+  displayName: string
+  tier: TrophyTier
+  description: string
+}
+
+/** Set on the overlay BrowserWindow via webPreferences.additionalArguments */
+const isOverlayWindow = process.argv.includes('--psteam-overlay')
+
+const api = {
+  isOverlayWindow,
+  storeGet: <K extends string>(key: K) => ipcRenderer.invoke('store:get', key),
+  storeSet: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
+  achievementsRefresh: () => ipcRenderer.invoke('achievements:refresh'),
+  overlayClose: () => ipcRenderer.invoke('overlay:close'),
+  openSettings: () => ipcRenderer.invoke('app:open-settings'),
+  onTrophyUnlock: (cb: (p: TrophyUnlockPayload) => void) => {
+    const fn = (_e: Electron.IpcRendererEvent, payload: TrophyUnlockPayload) => cb(payload)
+    ipcRenderer.on('trophy-unlock', fn)
+    return () => ipcRenderer.removeListener('trophy-unlock', fn)
+  },
+  onAchievementsUpdated: (cb: () => void) => {
+    const fn = () => cb()
+    ipcRenderer.on('achievements:updated', fn)
+    return () => ipcRenderer.removeListener('achievements:updated', fn)
+  }
+}
+
+contextBridge.exposeInMainWorld('psteam', api)
