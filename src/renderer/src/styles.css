@@ -11,6 +11,9 @@ html {
   --text: #e8eefc;
   --muted: #8a96b8;
   --line: rgba(255, 255, 255, 0.08);
+  --platinum: #e8f0ff;
+  --platinum-mid: #9db8e8;
+  --platinum-deep: #5a7ab8;
   font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
@@ -118,13 +121,15 @@ html.psteam-overlay #root {
 
 .trophy-meter {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 12px;
   justify-content: space-between;
 }
 
 .meter {
   flex: 1;
+  min-width: 68px;
   text-align: center;
   padding: 8px 4px;
   border-radius: 10px;
@@ -158,6 +163,47 @@ html.psteam-overlay #root {
 .meter.bronze .count {
   color: var(--bronze);
   text-shadow: 0 0 12px rgba(198, 127, 74, 0.3);
+}
+
+.meter.platinum .count {
+  color: var(--muted);
+  text-shadow: none;
+}
+
+.meter.platinum.platinum--earned .count {
+  color: var(--platinum);
+  text-shadow:
+    0 0 14px rgba(200, 220, 255, 0.55),
+    0 0 2px rgba(120, 160, 220, 0.9);
+}
+
+.badge.platinum {
+  color: #0a1020;
+  font-size: 8px;
+  letter-spacing: 0.02em;
+  background: linear-gradient(145deg, #ffffff 0%, var(--platinum-mid) 45%, var(--platinum-deep) 100%);
+  border-color: rgba(255, 255, 255, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.trophy-thumb-wrap.tier-ring-platinum {
+  box-shadow:
+    0 0 0 2px rgba(200, 215, 255, 0.75),
+    0 0 12px rgba(140, 170, 230, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.row.platinum-row {
+  margin-bottom: 8px;
+  border-color: rgba(200, 215, 255, 0.12);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.row.platinum-row:not(.locked) {
+  border-color: rgba(200, 215, 255, 0.28);
+  background: rgba(80, 120, 200, 0.08);
 }
 
 .tier-legend {

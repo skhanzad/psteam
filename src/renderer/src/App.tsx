@@ -11,17 +11,28 @@ function isOverlay(): boolean {
 }
 
 function tierLabel(t: TrophyTier): string {
+  if (t === 'platinum') return 'Pt'
   if (t === 'gold') return 'G'
   if (t === 'silver') return 'S'
   return 'B'
 }
 
-function countsByTier(list: StoredAchievement[]): { gold: number; silver: number; bronze: number } {
+function allAchievementsUnlocked(list: StoredAchievement[]): boolean {
+  return list.length > 0 && list.every((a) => a.achieved)
+}
+
+function countsByTier(list: StoredAchievement[]): {
+  gold: number
+  silver: number
+  bronze: number
+  platinum: number
+} {
   const unlocked = list.filter((a) => a.achieved)
   return {
     gold: unlocked.filter((a) => a.tier === 'gold').length,
     silver: unlocked.filter((a) => a.tier === 'silver').length,
-    bronze: unlocked.filter((a) => a.tier === 'bronze').length
+    bronze: unlocked.filter((a) => a.tier === 'bronze').length,
+    platinum: allAchievementsUnlocked(list) ? 1 : 0
   }
 }
 
@@ -48,7 +59,9 @@ function normalizeAchievementRow(raw: unknown): StoredAchievement | null {
     const x = Number.parseFloat(gpRaw.replace(',', '.'))
     globalPercent = Number.isFinite(x) ? x : null
   }
-  const tier = (['gold', 'silver', 'bronze'].includes(String(o.tier)) ? o.tier : 'bronze') as TrophyTier
+  const tier = (
+    ['gold', 'silver', 'bronze', 'platinum'].includes(String(o.tier)) ? o.tier : 'bronze'
+  ) as TrophyTier
   return {
     apiname: o.apiname,
     displayName: typeof o.displayName === 'string' ? o.displayName : String(o.apiname),
@@ -133,13 +146,16 @@ function OverlayView(): JSX.Element {
     }
   }, [load, tryRefresh])
 
-  const { gold, silver, bronze } = useMemo(() => countsByTier(list), [list])
+  const { gold, silver, bronze, platinum } = useMemo(() => countsByTier(list), [list])
+  const platinumEarned = platinum === 1
 
   const sorted = useMemo(() => {
-    const tierRank: Record<TrophyTier, number> = { gold: 0, silver: 1, bronze: 2 }
+    const tierRank: Record<Exclude<TrophyTier, 'platinum'>, number> = { gold: 0, silver: 1, bronze: 2 }
     return [...list].sort((a, b) => {
       if (a.achieved !== b.achieved) return a.achieved ? -1 : 1
-      if (tierRank[a.tier] !== tierRank[b.tier]) return tierRank[a.tier] - tierRank[b.tier]
+      const ra = a.tier === 'platinum' ? 2 : tierRank[a.tier]
+      const rb = b.tier === 'platinum' ? 2 : tierRank[b.tier]
+      if (ra !== rb) return ra - rb
       return a.displayName.localeCompare(b.displayName)
     })
   }, [list])
@@ -160,6 +176,7 @@ function OverlayView(): JSX.Element {
             ) : (
               <p className="compact-counts">
                 Unlocked: {list.filter((x) => x.achieved).length}/{list.length} · G {gold} · S {silver} · B {bronze}
+                {platinumEarned ? ' · Pt 1' : ''}
               </p>
             )}
           </div>
@@ -209,10 +226,15 @@ function OverlayView(): JSX.Element {
             <div className="label">Bronze</div>
             <div className="count">{bronze}</div>
           </div>
+          <div className={`meter platinum${platinumEarned ? ' platinum--earned' : ''}`}>
+            <div className="label">Platinum</div>
+            <div className="count">{platinum}</div>
+          </div>
         </div>
 
         <div className="tier-legend">
-          Tiers use global rarity: gold ≤5% of players, silver ≤25%, bronze above that (or unknown).
+          Tiers use global rarity: gold ≤5% of players, silver ≤25%, bronze above that (or unknown). Platinum is earned
+          when every achievement for this game is unlocked.
         </div>
 
         {loadErr ? <div className="err">{loadErr}</div> : null}
@@ -224,6 +246,21 @@ function OverlayView(): JSX.Element {
               ID, then Save &amp; refresh. On Steam, set Profile → Edit Profile → Privacy Settings → Game details to{' '}
               <strong>Public</strong> so the Web API can read achievements.
             </p>
+          ) : null}
+          {sorted.length > 0 ? (
+            <div className={`row platinum-row ${platinumEarned ? '' : 'locked'}`}>
+              <div className="trophy-thumb-wrap tier-ring-platinum">
+                <div className="badge platinum">{tierLabel('platinum')}</div>
+              </div>
+              <div className="row-body">
+                <h2>Platinum Trophy</h2>
+                <p className="pct">
+                  {platinumEarned
+                    ? 'Every Steam achievement for this game is unlocked.'
+                    : 'Unlock every achievement in this game to earn the Platinum.'}
+                </p>
+              </div>
+            </div>
           ) : null}
           {sorted.map((a) => {
             const img = trophyImageSrc(a)
@@ -261,7 +298,9 @@ function OverlayView(): JSX.Element {
                 <div className={`badge ${toast.tier}`}>{tierLabel(toast.tier)}</div>
               )}
               <div>
-                <div className="trophy-word">Trophy unlocked</div>
+                <div className="trophy-word">
+                  {toast.tier === 'platinum' ? 'Platinum trophy' : 'Trophy unlocked'}
+                </div>
                 <h3>{toast.displayName}</h3>
               </div>
             </div>

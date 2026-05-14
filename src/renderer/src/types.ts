@@ -1,4 +1,4 @@
-export type TrophyTier = 'gold' | 'silver' | 'bronze'
+export type TrophyTier = 'gold' | 'silver' | 'bronze' | 'platinum'
 
 export type TrophyUnlockPayload = {
   displayName: string

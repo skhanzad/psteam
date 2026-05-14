@@ -47,7 +47,7 @@ function getWindowIconPath(): string | undefined {
   return findAppIconPath() ?? undefined
 }
 
-type TrophyTier = 'gold' | 'silver' | 'bronze'
+type TrophyTier = 'gold' | 'silver' | 'bronze' | 'platinum'
 
 type StoredAchievement = {
   apiname: string
@@ -488,10 +488,16 @@ function mergeAchievements(
   return []
 }
 
+function allAchievementsUnlocked(list: StoredAchievement[]): boolean {
+  return list.length > 0 && list.every((x) => x.achieved)
+}
+
 function broadcastNewUnlocks(previous: StoredAchievement[], next: StoredAchievement[]): void {
   const prevUnlocked = new Set(previous.filter((x) => x.achieved).map((x) => x.apiname))
+  let newIndividualUnlock = false
   for (const a of next) {
     if (a.achieved && !prevUnlocked.has(a.apiname)) {
+      newIndividualUnlock = true
       const iconUrl = a.icon || a.iconGray
       overlayWindow?.webContents.send('trophy-unlock', {
         displayName: a.displayName,
@@ -507,6 +513,24 @@ function broadcastNewUnlocks(previous: StoredAchievement[], next: StoredAchievem
       })
     }
   }
+
+  const prevComplete = allAchievementsUnlocked(previous)
+  const nextComplete = allAchievementsUnlocked(next)
+  if (!nextComplete || prevComplete) return
+
+  const platinumPayload = {
+    displayName: 'Platinum Trophy',
+    tier: 'platinum' as const,
+    description: 'Unlocked every Steam achievement for this game.',
+    iconUrl: undefined as string | undefined
+  }
+  const emitPlatinum = (): void => {
+    overlayWindow?.webContents.send('trophy-unlock', platinumPayload)
+    mainWindow?.webContents.send('trophy-unlock', platinumPayload)
+  }
+  /** After the last regular trophy toast so the platinum celebration is visible. */
+  if (newIndividualUnlock) setTimeout(emitPlatinum, 5300)
+  else emitPlatinum()
 }
 
 async function refreshAchievements(opts?: { skipPresenceSync?: boolean }): Promise<StoredAchievement[] | { error: string }> {

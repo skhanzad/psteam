@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-type TrophyTier = 'gold' | 'silver' | 'bronze'
+type TrophyTier = 'gold' | 'silver' | 'bronze' | 'platinum'
 
 type TrophyUnlockPayload = {
   displayName: string
